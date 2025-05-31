@@ -1,0 +1,27 @@
+{
+  "canisters": {
+    "icrc37plus_token_backend": {
+      "candid": "src/icrc37plus_token_backend/icrc37plus_token_backend.did",
+      "package": "icrc37plus_token_backend",
+      "type": "rust"
+    },
+    "icrc37plus_token_frontend": {
+      "dependencies": [
+        "icrc37plus_token_backend"
+      ],
+      "source": [
+        "src/icrc37plus_token_frontend/dist"
+      ],
+      "type": "assets",
+      "workspace": "icrc37plus_token_frontend"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

@@ -1,0 +1,293 @@
+type AdminType = variant {
+  System;
+  Functional;
+};
+
+type Admin = record {
+  owner : principal;
+  admin_type : AdminType;
+};
+
+type Account = record {
+  owner : principal;
+  subaccount : opt vec nat8;
+};
+
+type ApprovalArgs = record {
+  from_subaccount : opt vec nat8;
+  spender : Account;
+  token_id : nat64;
+  expires_at : opt nat64;
+  memo : opt vec nat8;
+  created_at_time : opt nat64;
+};
+
+type ApprovalCollectionArgs = record {
+  from_subaccount : opt vec nat8;
+  spender : Account;
+  expires_at : opt nat64;
+  memo : opt vec nat8;
+  created_at_time : opt nat64;
+};
+
+type CollectionApproval = record {
+  spender : Account;
+  expires_at : opt nat64;
+  memo : opt vec nat8;
+  created_at_time : nat64;
+};
+
+type HttpRequest = record {
+  url : text;
+  method : text;
+  body : vec nat8;
+  headers : vec record { text; text };
+  certificate_version : opt nat16;
+};
+
+type HttpResponse = record {
+  body : vec nat8;
+  headers : vec record { text; text };
+  status_code : nat16;
+  streaming_strategy : opt StreamingStrategy;
+};
+
+type StreamingStrategy = variant {
+  Callback : record {
+    token : StreamingCallbackToken;
+    callback : func (StreamingCallbackToken) -> (StreamingCallbackResponse) query;
+  };
+};
+
+type StreamingCallbackToken = record {
+  key : text;
+  index : nat;
+  content_encoding : text;
+};
+
+type StreamingCallbackResponse = record {
+  body : vec nat8;
+  token : opt StreamingCallbackToken;
+};
+
+type NFT = record {
+  token_id : nat64;
+  owner : principal;
+  metadata : NFTMetadata;
+  created_at : nat64;
+  transfer_history : vec TransferRecord;
+};
+
+type NFTDisplayData = record {
+  token_id : nat64;
+  name : text;
+  description : text;
+  image_url : text;
+  owner : principal;
+  view_link : text;
+  svg_link : opt text;
+};
+
+type NFTMetadata = record {
+  name : text;
+  description : text;
+  image_url : text;
+  content_url : opt text;
+  content_type : opt text;
+  properties : opt variant {};
+  is_layered : bool;
+  svg_id : opt nat64;
+  layers : opt vec text;
+};
+
+type RevokeCollectionApprovalsArgs = record {
+  from_subaccount : opt vec nat8;
+  spender : opt Account;
+};
+
+type RevokeTokenApprovalsArgs = record {
+  from_subaccount : opt vec nat8;
+  spender : opt Account;
+  token_ids : vec nat64;
+};
+
+type Standard = record {
+  name : text;
+  url : text;
+};
+
+type TokenApproval = record {
+  spender : Account;
+  expires_at : opt nat64;
+  memo : opt vec nat8;
+  created_at_time : nat64;
+};
+
+type TransferArgs = record {
+  from_subaccount : opt vec nat8;
+  to : Account;
+  token_id : nat64;
+  memo : opt vec nat8;
+  created_at_time : opt nat64;
+};
+
+type TransferError = variant {
+  BadFee : record { expected_fee : nat };
+  BadBurn : record { min_burn_amount : nat };
+  InsufficientFunds : record { balance : nat };
+  TooOld;
+  CreatedInFuture : record { ledger_time : nat64 };
+  Duplicate : record { duplicate_of : nat64 };
+  GenericError : record { error_code : nat; message : text };
+  TemporarilyUnavailable;
+  Unauthorized;
+  NotFound;
+};
+
+type TransferFromArgs = record {
+  spender_subaccount : opt vec nat8;
+  from : Account;
+  to : Account;
+  token_id : nat64;
+  memo : opt vec nat8;
+  created_at_time : opt nat64;
+};
+
+type TransferRecord = record {
+  from : principal;
+  to : principal;
+  timestamp : nat64;
+};
+
+type Transaction = record {
+  kind : text;
+  timestamp : nat64;
+  token_id : nat64;
+  from : principal;
+  to : principal;
+  memo : opt vec nat8;
+  operation : text;
+  transaction_id : nat64;
+};
+
+type GetTransactionsRequest = record {
+  start : opt nat64;
+  length : opt nat16;
+};
+
+type GetTransactionsResponse = record {
+  transactions : vec Transaction;
+  total : nat64;
+};
+
+type ArchiveInfo = record {
+  canister_id : principal;
+  start : nat64;
+  end : nat64;
+};
+
+type ApprovalInfo = record {
+  spender : principal;
+  token_id : nat64;
+  expires_at : opt nat64;
+  created_at : nat64;
+};
+
+type UpdateCollectionDetailsArgs = record {
+  name : opt text;
+  symbol : opt text;
+  description : opt text;
+  max_supply : opt nat64;
+  base_url : opt text;
+};
+
+type Value = variant {
+  Nat : nat;
+  Int : int;
+  Text : text;
+  Blob : vec nat8;
+};
+
+type AssetMetadata = record {
+  key : text;
+  content_type : text;
+  size : nat64;
+  created_at : nat64;
+  modified_at : nat64;
+  description : opt text;
+  uploaded_by : principal;
+};
+
+type UploadArgs = record {
+  key : opt text;
+  content_type : text;
+  data : vec nat8;
+  description : opt text;
+};
+
+type DownloadResult = record {
+  data : vec nat8;
+  content_type : text;
+  metadata : AssetMetadata;
+};
+
+service : {
+  // Admin management functions
+  add_admin : (principal, AdminType) -> (variant { Ok; Err : text });
+  remove_admin : (principal) -> (variant { Ok; Err : text });
+  get_admins : () -> (vec Admin) query;
+  is_admin_type : (principal, AdminType) -> (bool) query;
+  
+  // Admin and whitelist functions
+  add_to_whitelist : (principal) -> (variant { Ok; Err : text });
+  remove_from_whitelist : (principal) -> (variant { Ok; Err : text });
+  is_whitelisted : (principal) -> (bool) query;
+  
+  // Collection management and queries
+  update_collection_details : (UpdateCollectionDetailsArgs) -> (variant { Ok; Err : text });
+  update_base_url : (text) -> (variant { Ok; Err : text });
+  get_collection_info : () -> (vec record { text; Value }) query;
+  get_nft : (nat64) -> (opt NFT) query;
+  get_user_nfts : (principal) -> (vec NFT) query;
+  get_transaction_history : (nat64) -> (vec TransferRecord) query;
+  
+  // Asset management functions
+  upload : (UploadArgs) -> (variant { Ok : text; Err : text });
+  download : (text) -> (variant { Ok : DownloadResult; Err : text }) query;
+  list_assets : () -> (variant { Ok : vec AssetMetadata; Err : text }) query;
+  delete_asset : (text) -> (variant { Ok; Err : text });
+  get_asset_info : (text) -> (opt AssetMetadata) query;
+  http_request : (HttpRequest) -> (HttpResponse) query;
+  
+  // ICRC-7 Base Standard Methods
+  icrc7_name : () -> (text) query;
+  icrc7_symbol : () -> (text) query;
+  icrc7_description : () -> (opt text) query;
+  icrc7_balance_of : (vec Account) -> (vec nat64) query;
+  icrc7_collection_metadata : () -> (vec record { text; Value }) query;
+  icrc7_owner_of : (vec nat64) -> (vec opt Account) query;
+  icrc7_token_metadata : (vec nat64) -> (vec opt vec record { text; Value }) query;
+  icrc7_tokens : (opt nat64, opt nat64) -> (vec nat64) query;
+  icrc7_tokens_of : (Account, opt nat64, opt nat64) -> (vec nat64) query;
+  icrc7_total_supply : () -> (nat64) query;
+  icrc7_supported_standards : () -> (vec Standard) query;
+  icrc7_transfer : (vec TransferArgs) -> (vec variant { Ok : nat64; Err : TransferError });
+  
+  // ICRC-37 Extension Methods
+  icrc37_approve_collection : (ApprovalCollectionArgs) -> (variant { Ok : nat64; Err : TransferError });
+  icrc37_approve_tokens : (vec ApprovalArgs) -> (vec variant { Ok : nat64; Err : TransferError });
+  icrc37_is_approved : (Account, Account, nat64) -> (bool) query;
+  icrc37_transfer_from : (vec TransferFromArgs) -> (vec variant { Ok : nat64; Err : TransferError });
+  
+  // ICRC-3 Transaction Log Methods
+  icrc3_get_transactions : (GetTransactionsRequest) -> (GetTransactionsResponse) query;
+  icrc3_get_archives : () -> (vec ArchiveInfo) query;
+  icrc3_get_transaction : (nat64) -> (opt Transaction) query;
+  
+  // Minting functions
+  mint : () -> (variant { Ok : record { nat64; NFTMetadata }; Err : text });
+  
+  // Testing functions
+  whoami : () -> (principal) query;
+  make_me_admin : () -> (variant { Ok; Err : text });
+};

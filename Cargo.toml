@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "src/jbducks_token_backend"
+]
+resolver = "2"
