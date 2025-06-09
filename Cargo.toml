@@ -1,5 +1,5 @@
 [workspace]
 members = [
-    "src/jbducks_token_backend"
+    "src/icrc37plus_token_backend"
 ]
 resolver = "2"

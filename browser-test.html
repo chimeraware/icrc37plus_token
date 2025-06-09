@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ICRC37+ Canister Test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #2a5885;
+      border-bottom: 2px solid #eee;
+      padding-bottom: 10px;
+    }
+    .card {
+      background: #f9f9f9;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button {
+      background: #2a5885;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      margin-right: 10px;
+      margin-bottom: 10px;
+    }
+    button:hover {
+      background: #1e3c5c;
+    }
+    button.secondary {
+      background: #6c757d;
+    }
+    button.secondary:hover {
+      background: #5a6268;
+    }
+    button.highlight {
+      background: #28a745;
+    }
+    button.highlight:hover {
+      background: #218838;
+    }
+    pre {
+      background: #f1f1f1;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+    }
+    .result {
+      margin-top: 20px;
+    }
+    .success {
+      color: #28a745;
+      font-weight: bold;
+    }
+    .error {
+      color: #dc3545;
+      font-weight: bold;
+    }
+    input {
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      width: 100%;
+      margin-bottom: 10px;
+      font-family: monospace;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    .config-section {
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>ICRC37+ Canister Test Tool</h1>
+  
+  <div class="card">
+    <h2>Configuration</h2>
+    <div class="config-section">
+      <label for="canisterId">Canister ID:</label>
+      <input type="text" id="canisterId" value="rrkah-fqaaa-aaaaa-aaaaq-cai" placeholder="Enter canister ID">
+      
+      <label for="host">IC Host:</label>
+      <input type="text" id="host" value="http://localhost:4943" placeholder="Enter IC host URL">
+    </div>
+    
+    <div>
+      <button id="testWhoami" class="highlight">Test Whoami Method</button>
+      <button id="clearResults" class="secondary">Clear Results</button>
+    </div>
+  </div>
+  
+  <div class="card result">
+    <h2>Test Results</h2>
+    <pre id="results">Results will appear here...</pre>
+  </div>
+
+  <!-- Load the agent library from unpkg CDN -->
+  <script src="https://unpkg.com/@dfinity/agent/dist/index.js"></script>
+  <script src="https://unpkg.com/@dfinity/principal/dist/index.js"></script>
+  
+  <script>
+    // Get references to DOM elements
+    const canisterIdInput = document.getElementById('canisterId');
+    const hostInput = document.getElementById('host');
+    const testWhoamiButton = document.getElementById('testWhoami');
+    const clearResultsButton = document.getElementById('clearResults');
+    const resultsElement = document.getElementById('results');
+    
+    // Function to log messages to the results area
+    function log(message, isError = false) {
+      const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+      const prefix = isError ? `[${timestamp}] ❌ ERROR: ` : `[${timestamp}] `;
+      
+      resultsElement.textContent += prefix + message + '\n';
+      resultsElement.scrollTop = resultsElement.scrollHeight;
+    }
+    
+    // Function to clear the results
+    function clearResults() {
+      resultsElement.textContent = 'Results will appear here...\n';
+    }
+    
+    // Function to test the whoami method
+    async function testWhoami() {
+      clearResults();
+      
+      const canisterId = canisterIdInput.value.trim();
+      const host = hostInput.value.trim();
+      
+      if (!canisterId) {
+        log('Please enter a canister ID', true);
+        return;
+      }
+      
+      if (!host) {
+        log('Please enter an IC host URL', true);
+        return;
+      }
+      
+      log(`Testing connection to canister ${canisterId} at ${host}...`);
+      
+      try {
+        // Create an agent
+        const agent = new window.ic.agent.HttpAgent({
+          host: host,
+          fetchRootKey: host.includes('localhost') || host.includes('127.0.0.1')
+        });
+        
+        log('Agent created successfully');
+        
+        // Fetch root key for local development
+        if (host.includes('localhost') || host.includes('127.0.0.1')) {
+          log('Fetching root key for local development...');
+          await agent.fetchRootKey();
+          log('Root key fetched successfully');
+        }
+        
+        // Create the interface factory for the whoami method
+        const idlFactory = ({ IDL }) => {
+          return IDL.Service({
+            'whoami': IDL.Func([], [IDL.Principal], ['query']),
+          });
+        };
+        
+        log('Creating actor with whoami method...');
+        
+        // Create an actor with just the whoami method
+        const actor = window.ic.agent.Actor.createActor(idlFactory, {
+          agent,
+          canisterId,
+        });
+        
+        log('Actor created successfully, calling whoami method...');
+        
+        // Call the whoami method
+        const principal = await actor.whoami();
+        
+        log(`✅ SUCCESS! Your principal is: ${principal.toString()}`, false);
+        log('Connection to canister is working correctly!', false);
+        
+        // Add a class to highlight success
+        resultsElement.classList.add('success');
+      } catch (error) {
+        log(`Failed to test whoami method: ${error.message}`, true);
+        
+        // Provide more detailed error information
+        if (error.message.includes("Canister") && error.message.includes("not found")) {
+          log("This usually means the canister ID is incorrect or the canister is not deployed.", true);
+        } else if (error.message.includes("Failed to fetch")) {
+          log("This usually means the local replica is not running or the host URL is incorrect.", true);
+        }
+        
+        // Add a class to highlight error
+        resultsElement.classList.add('error');
+      }
+    }
+    
+    // Add event listeners
+    testWhoamiButton.addEventListener('click', testWhoami);
+    clearResultsButton.addEventListener('click', clearResults);
+    
+    // Initialize
+    log('Test tool initialized. Click "Test Whoami Method" to begin.');
+  </script>
+</body>
+</html>

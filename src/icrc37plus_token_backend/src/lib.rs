@@ -1,10 +1,10 @@
 // ICRC-37 Compliant NFT Canister with Minting and Whitelist Functionality
 
 use candid::{CandidType, Deserialize, Principal, Nat};
+use serde::Serialize;
 use ic_cdk::api::{caller, time};
 use ic_cdk_macros::*;
-use serde::Serialize;
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, cmp::Ordering};
 // use std::convert::TryInto;  // Commented out unused import
 
 // Define admin types
@@ -20,29 +20,96 @@ struct Admin {
     admin_type: AdminType,
 }
 
-// Define Collection Details structure
-#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
-struct CollectionDetails {
-    name: String,
-    symbol: String, 
-    description: String,
-    max_supply: Option<u64>,
-    base_url: String,
+// Price type (standard or whitelist)
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum PriceType {
+    Standard,
+    Whitelist,
+}
+
+// Define mint schedule with start/end time and associated prices
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug)]
+pub struct MintSchedule {
+    pub name: String,                    // Descriptive name for the schedule (e.g. "Standard", "Whitelist", "Early Bird")
+    pub bundle_prices: Vec<BundlePrice>, // Bundle prices directly associated with this schedule
+    pub start_time: Option<u64>,         // Start time in nanoseconds since epoch (None = no start restriction)
+    pub end_time: Option<u64>,           // End time in nanoseconds since epoch (None = no end restriction)
+    pub active: bool,                    // Whether this schedule is currently active
+    pub whitelist_only: bool,            // Whether this schedule is only for whitelisted users
+}
+
+// Collection metadata and configuration
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug)]
+pub struct CollectionDetails {
+    pub name: String,
+    pub symbol: String,
+    pub description: String,
+    pub max_supply: Option<u64>,
+    pub base_url: String,
+    pub logo: Option<String>,
+    // Pricing
+    pub pricing_enabled: bool,
+    // Schedules collection instead of individual time fields
+    pub mint_schedules: Vec<MintSchedule>,
+}
+
+// NFT Counter for tracking token IDs
+struct Counter {
+    counter: u64,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Self { counter: 0 }
+    }
+    
+    fn get(&self) -> u64 {
+        self.counter
+    }
+    
+    fn increment(&mut self) -> u64 {
+        self.counter += 1;
+        self.counter
+    }
 }
 
 // In-memory storage using thread_local
 thread_local! {
     static TOKEN_ID_COUNTER: RefCell<u64> = RefCell::new(0);
     static NFTS: RefCell<HashMap<u64, NFT>> = RefCell::new(HashMap::new());
+    static TOKENS: RefCell<HashMap<u64, Principal>> = RefCell::new(HashMap::new());
+    static TOKEN_ASSETS: RefCell<HashMap<u64, String>> = RefCell::new(HashMap::new());
     static OWNER_TOKENS: RefCell<HashMap<Principal, Vec<u64>>> = RefCell::new(HashMap::new());
     static WHITELIST: RefCell<HashMap<Principal, bool>> = RefCell::new(HashMap::new());
     static ADMINS: RefCell<HashMap<Principal, AdminType>> = RefCell::new(HashMap::new());
+    static NFT_COUNTER: RefCell<Counter> = RefCell::new(Counter::new());
     static COLLECTION_DETAILS: RefCell<CollectionDetails> = RefCell::new(CollectionDetails {
-        name: COLLECTION_NAME.to_string(),
-        symbol: COLLECTION_SYMBOL.to_string(),
-        description: COLLECTION_DESCRIPTION.to_string(),
-        max_supply: None,
-        base_url: "http://127.0.0.1:4943".to_string(),
+        name: "ICRC-37+ NFT".to_string(),
+        symbol: "ICRC37+".to_string(),
+        description: "A fully compliant ICRC-37+ NFT collection".to_string(),
+        max_supply: Some(1000),
+        base_url: "https://example.com/api".to_string(),
+        logo: None,
+        mint_schedules: vec![
+            MintSchedule {
+                name: "Standard".to_string(),
+                bundle_prices: Vec::new(),
+                start_time: None,
+                end_time: None,
+                active: false,
+                whitelist_only: false,
+            },
+            MintSchedule {
+                name: "Whitelist".to_string(),
+                bundle_prices: Vec::new(),
+                start_time: None,
+                end_time: None,
+                active: false,
+                whitelist_only: true,
+            },
+        ],
+        // Initialize pricing
+        pricing_enabled: false,
     });
     // Simple asset storage implementation
     static ASSETS: RefCell<HashMap<String, Asset>> = RefCell::new(HashMap::new());
@@ -56,6 +123,7 @@ thread_local! {
     static TRANSACTION_ID_COUNTER: RefCell<u64> = RefCell::new(0);
     static ARCHIVES: RefCell<Vec<ArchiveInfo>> = RefCell::new(Vec::new());
 }
+
 // Define ICRC-37 compatible NFT type
 #[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
 struct NFT {
@@ -199,13 +267,49 @@ enum Value {
     Blob(Vec<u8>),
 }
 
-#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug)]
 struct UpdateCollectionDetailsArgs {
     name: Option<String>,
     symbol: Option<String>,
     description: Option<String>,
     max_supply: Option<u64>,
     base_url: Option<String>,
+    logo: Option<String>,
+    pricing_enabled: Option<bool>,
+    mint_schedules: Option<Vec<MintSchedule>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq, Ord, PartialOrd)]
+pub struct BundlePrice {
+    pub quantity: u64,  // Number of NFTs in the bundle
+    pub price: Nat,     // Price in ICP (e8s)
+}
+
+// Arguments for minting NFTs
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct MintArgs {
+    pub asset_id: String,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct MintBundleArgs {
+    pub quantity: u64,
+    pub asset_ids: Vec<String>,
+}
+
+// Arguments for setting standard prices
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct SetStandardPricesArgs {
+    pub standard_bundles: Vec<BundlePrice>,  // Configurable bundles for standard users
+    pub whitelist_bundles: Vec<BundlePrice>, // Configurable bundles for whitelist users
+}
+
+// Get bundle prices - public query
+#[query]
+fn get_mint_schedules() -> Vec<MintSchedule> {
+    COLLECTION_DETAILS.with(|details| {
+        details.borrow().mint_schedules.clone()
+    })
 }
 
 // Collection metadata constants - used for initial values
@@ -300,12 +404,12 @@ fn icrc7_collection_metadata() -> Vec<(String, Value)> {
     
     // Add admin information
     let admins = ADMINS.with(|admins| {
-        let admin_map = admins.borrow();
-        let system_admins: Vec<String> = admin_map.iter()
+        admins.borrow()
+            .iter()
             .filter(|(_, admin_type)| **admin_type == AdminType::System)
             .map(|(principal, _)| principal.to_string())
-            .collect();
-        system_admins.join(", ")
+            .collect::<Vec<String>>()
+            .join(", ")
     });
     
     metadata.push(("owner".to_string(), Value::Text(admins)));
@@ -722,7 +826,6 @@ fn record_transaction(
     transaction_id
 }
 
-
 // ==== TESTING FUNCTIONS ====
 
 // Get the caller's principal ID - useful for testing
@@ -819,7 +922,7 @@ fn is_admin_type(user: Principal, required_type: AdminType) -> bool {
 #[update]
 fn add_to_whitelist(user: Principal) -> Result<(), String> {
     let caller = caller();
-    
+
     if !is_admin(caller) {
         return Err("Unauthorized: Only admins can add users to whitelist".to_string());
     }
@@ -834,7 +937,7 @@ fn add_to_whitelist(user: Principal) -> Result<(), String> {
 #[update]
 fn remove_from_whitelist(user: Principal) -> Result<(), String> {
     let caller = caller();
-    
+
     if !is_admin(caller) {
         return Err("Unauthorized: Only admins can remove users from whitelist".to_string());
     }
@@ -1008,98 +1111,229 @@ fn count_system_admins() -> usize {
 // ==== MINTING FUNCTIONS ====
 
 #[update]
-fn mint() -> Result<(u64, NFTMetadata), String> {
+async fn mint(args: MintArgs) -> Result<u64, String> {
     let caller = caller();
+    let current_time = ic_cdk::api::time();
     
-    if !is_whitelisted(caller) {
-        return Err("Unauthorized: User is not on the whitelist".to_string());
-    }
-    
-    // Find all unminted SVG files in assets
-    let svg_assets = ASSETS.with(|assets| {
-        let assets_ref = assets.borrow();
-        let minted = MINTED_ASSETS.with(|minted| minted.borrow().clone());
+    // Check that minting is active for this user
+    COLLECTION_DETAILS.with(|details| {
+        let details = details.borrow();
         
-        assets_ref.iter()
-            .filter(|(key, asset)| {
-                // Only include SVGs that haven't been minted yet
-                asset.content_type == "image/svg+xml" && !minted.contains_key(&key.to_string())
+        // Check if pricing is enabled
+        if !details.pricing_enabled {
+            return Err("Minting is not enabled".to_string());
+        }
+        
+        // Check if user is in whitelist
+        let user_in_whitelist = WHITELIST.with(|whitelist| {
+            whitelist.borrow().get(&caller).copied().unwrap_or(false)
+        });
+        
+        // Find active schedules that match the user's status
+        let active_schedules: Vec<&MintSchedule> = details.mint_schedules.iter()
+            .filter(|s| s.active)
+            .filter(|s| {
+                // Check if time constraints are met
+                let time_valid = match (s.start_time, s.end_time) {
+                    (Some(start), Some(end)) => current_time >= start && current_time <= end,
+                    (Some(start), None) => current_time >= start,
+                    (None, Some(end)) => current_time <= end,
+                    (None, None) => true,
+                };
+                
+                // Check if user status matches the schedule
+                let status_matches = if s.whitelist_only {
+                    user_in_whitelist
+                } else {
+                    true // Non-whitelist schedules apply to everyone
+                };
+                
+                time_valid && status_matches
             })
-            .map(|(key, asset)| (key.clone(), asset.clone()))
-            .collect::<Vec<(String, Asset)>>()
-    });
+            .collect();
+        
+        if active_schedules.is_empty() {
+            return Err("No active minting schedules available for this user".to_string());
+        }
+        
+        // Check max supply if set
+        if let Some(max_supply) = details.max_supply {
+            let minted_count = NFT_COUNTER.with(|counter| counter.borrow().get());
+            if minted_count >= max_supply {
+                return Err("Maximum supply reached".to_string());
+            }
+        }
+        
+        // Get the price for this minting (1 NFT)
+        let quantity = 1;
+        
+        // Get the appropriate price from the active schedules
+        let price = get_active_mint_price(quantity, &active_schedules)?
+            .ok_or_else(|| "No price available for this quantity".to_string())?;
+        
+        // TODO: Handle ICP payment verification here
+        // 1. Check if price > 0
+        // 2. If yes, verify that correct amount was paid
+        
+        Ok(())
+    })?;
     
-    // Check if we have any unminted SVG files
-    if svg_assets.is_empty() {
-        return Err("All SVG assets have already been minted. No more NFTs available.".to_string());
+    // Mint the NFT now that all checks have passed
+    let new_token_id = mint_nft(caller, args.asset_id.clone())?;
+    
+    // Record the transaction
+    record_transaction(
+        "mint",
+        new_token_id,
+        ic_cdk::api::id(),
+        caller,
+        None, // memo
+        format!("Minted token {} with asset {}", new_token_id, args.asset_id)
+    );
+    
+    Ok(new_token_id)
+}
+
+// New function to mint multiple NFTs
+#[update]
+async fn mint_bundle(args: MintBundleArgs) -> Result<Vec<u64>, String> {
+    let caller = caller();
+    let current_time = ic_cdk::api::time();
+    let quantity = args.quantity;
+    
+    if quantity == 0 {
+        return Err("Quantity must be greater than 0".to_string());
     }
     
-    // Select a random SVG file from the unminted ones
-    let current_time = time();
-    let random_index = (current_time as usize) % svg_assets.len();
-    let (selected_key, _selected_asset) = &svg_assets[random_index];
+    // Check that minting is active for this user
+    COLLECTION_DETAILS.with(|details| {
+        let details = details.borrow();
+        
+        // Check if pricing is enabled
+        if !details.pricing_enabled {
+            return Err("Minting is not enabled".to_string());
+        }
+        
+        // Check if user is in whitelist
+        let user_in_whitelist = WHITELIST.with(|whitelist| {
+            whitelist.borrow().get(&caller).copied().unwrap_or(false)
+        });
+        
+        // Find active schedules that match the user's status
+        let active_schedules: Vec<&MintSchedule> = details.mint_schedules.iter()
+            .filter(|s| s.active)
+            .filter(|s| {
+                // Check if time constraints are met
+                let time_valid = match (s.start_time, s.end_time) {
+                    (Some(start), Some(end)) => current_time >= start && current_time <= end,
+                    (Some(start), None) => current_time >= start,
+                    (None, Some(end)) => current_time <= end,
+                    (None, None) => true,
+                };
+                
+                // Check if user status matches the schedule
+                let status_matches = if s.whitelist_only {
+                    user_in_whitelist
+                } else {
+                    true // Non-whitelist schedules apply to everyone
+                };
+                
+                time_valid && status_matches
+            })
+            .collect();
+        
+        if active_schedules.is_empty() {
+            return Err("No active minting schedules available for this user".to_string());
+        }
+        
+        // Check max supply if set
+        if let Some(max_supply) = details.max_supply {
+            let minted_count = NFT_COUNTER.with(|counter| counter.borrow().get());
+            if minted_count + quantity > max_supply {
+                return Err(format!("Requested quantity exceeds available supply: {} left", max_supply - minted_count));
+            }
+        }
+        
+        // Get the price for this bundle size
+        let price = get_active_mint_price(quantity, &active_schedules)?
+            .ok_or_else(|| format!("No price available for quantity {}", quantity))?;
+        
+        // TODO: Handle ICP payment verification here
+        // 1. Check if price > 0
+        // 2. If yes, verify that correct amount was paid
+        
+        Ok(())
+    })?;
     
-    // Mark this asset as minted
-    MINTED_ASSETS.with(|minted| {
-        minted.borrow_mut().insert(selected_key.clone(), true);
-    });
+    // Mint the NFTs now that all checks have passed
+    let mut token_ids = Vec::with_capacity(quantity as usize);
     
-    // Get collection details for metadata
-    let collection_details = COLLECTION_DETAILS.with(|details| details.borrow().clone());
+    for _ in 0..quantity {
+        // Generate a unique asset ID for each token in the bundle
+        let asset_id = format!("asset-{}", generate_uuid());
+        
+        // Mint the NFT
+        let token_id = mint_nft(caller, asset_id)?;
+        token_ids.push(token_id);
+    }
     
-    // Generate SVG URL with full path including canister ID using the dynamic base URL
-    let canister_id = ic_cdk::id();
-    let svg_url = format!("{}/asset/{}?canisterId={}", collection_details.base_url, selected_key, canister_id);
+    // Get the first token to represent the bundle in the transaction
+    let first_token_id = token_ids.first().copied().unwrap_or(0);
     
-    // Create metadata using collection info and selected SVG
-    let metadata = NFTMetadata {
-        name: format!("{} #{}", collection_details.name, TOKEN_ID_COUNTER.with(|counter| *counter.borrow())),
-        description: collection_details.description.clone(),
-        image_url: svg_url.clone(),
-        content_url: Some(svg_url),
-        content_type: Some("image/svg+xml".to_string()),
-        properties: None,
-        is_layered: false,
-        svg_id: None,
-        layers: None,
-    };
+    // Record the transaction for the entire bundle
+    record_transaction(
+        "mint_bundle",
+        first_token_id,
+        ic_cdk::api::id(),
+        caller,
+        None, // memo
+        format!("Minted bundle of {} tokens", quantity)
+    );
     
-    let token_id = TOKEN_ID_COUNTER.with(|counter| {
-        let current = *counter.borrow();
-        *counter.borrow_mut() = current + 1;
-        current
-    });
+    Ok(token_ids)
+}
+
+// Get available bundles for the user
+#[query]
+fn get_available_bundles(user: Principal) -> Vec<(MintSchedule, Vec<BundlePrice>)> {
+    let current_time = ic_cdk::api::time();
     
-    // Clone the metadata so we can return it later
-    let metadata_clone = metadata.clone();
-    
-    let nft = NFT {
-        token_id,
-        owner: caller,
-        metadata,
-        created_at: time(),
-        transfer_history: Vec::new(),
-    };
-    
-    // Store the NFT
-    NFTS.with(|nfts| {
-        nfts.borrow_mut().insert(token_id, nft);
-    });
-    
-    // Update owner records
-    OWNER_TOKENS.with(|owner_tokens| {
-        let mut tokens = owner_tokens.borrow_mut();
-        tokens.entry(caller)
-            .or_insert_with(Vec::new)
-            .push(token_id);
-    });
-    
-    // Record the mint in the transaction log
-    let _transaction_id = record_transaction("mint", token_id, ic_cdk::api::id(), caller, 
-                                           None, "mint_nft".to_string());
-    
-    // Return both the token ID and the metadata
-    Ok((token_id, metadata_clone))
+    COLLECTION_DETAILS.with(|details| {
+        let details = details.borrow();
+        
+        if !details.pricing_enabled {
+            return vec![];
+        }
+        
+        // Check if user is in whitelist
+        let user_in_whitelist = WHITELIST.with(|whitelist| {
+            whitelist.borrow().get(&user).copied().unwrap_or(false)
+        });
+        
+        // Find active schedules that match the user's status
+        details.mint_schedules.iter()
+            .filter(|s| s.active)
+            .filter(|s| {
+                // Check if time constraints are met
+                let time_valid = match (s.start_time, s.end_time) {
+                    (Some(start), Some(end)) => current_time >= start && current_time <= end,
+                    (Some(start), None) => current_time >= start,
+                    (None, Some(end)) => current_time <= end,
+                    (None, None) => true,
+                };
+                
+                // Check if user status matches the schedule
+                let status_matches = if s.whitelist_only {
+                    user_in_whitelist
+                } else {
+                    true // Non-whitelist schedules apply to everyone
+                };
+                
+                time_valid && status_matches
+            })
+            .map(|schedule| (schedule.clone(), schedule.bundle_prices.clone()))
+            .collect()
+    })
 }
 
 // ==== CUSTOM QUERY FUNCTIONS ====
@@ -1161,6 +1395,51 @@ fn update_base_url(new_base_url: String) -> Result<(), String> {
     Ok(())
 }
 
+// Update prices for NFT bundles - unified method for admin
+// Deprecated: use update_mint_schedule instead
+#[update]
+fn update_prices(_price_args: String) -> Result<(), String> {
+    Err("This method is deprecated. Use update_mint_schedule instead.".to_string())
+}
+
+// Get minting timeframes - public query
+#[query]
+fn get_minting_timeframes() -> Vec<MintSchedule> {
+    COLLECTION_DETAILS.with(|details| details.borrow().mint_schedules.clone())
+}
+
+// Check if minting is currently active
+#[query]
+fn is_minting_active() -> (bool, bool, u64) {
+    let current_time = ic_cdk::api::time();
+    
+    COLLECTION_DETAILS.with(|details| {
+        let details = details.borrow();
+        
+        // Check if public minting is active
+        let public_minting_active = details.mint_schedules.iter().any(|schedule| {
+            match (schedule.start_time, schedule.end_time) {
+                (Some(start), Some(end)) => current_time >= start && current_time <= end,
+                (Some(start), None) => current_time >= start,
+                (None, Some(end)) => current_time <= end,
+                (None, None) => true,
+            }
+        });
+        
+        // Check if whitelist minting is active
+        let whitelist_active = details.mint_schedules.iter().any(|schedule| {
+            match (schedule.start_time, schedule.end_time) {
+                (Some(start), Some(end)) => current_time >= start && current_time <= end,
+                (Some(start), None) => current_time >= start,
+                (None, Some(end)) => current_time <= end,
+                (None, None) => true,
+            }
+        });
+        
+        (public_minting_active, whitelist_active, current_time)
+    })
+}
+
 // Collection update method - admin only
 #[update]
 fn update_collection_details(args: UpdateCollectionDetailsArgs) -> Result<(), String> {
@@ -1175,11 +1454,11 @@ fn update_collection_details(args: UpdateCollectionDetailsArgs) -> Result<(), St
     if args.max_supply.is_some() {
         let nft_count = NFTS.with(|nfts| nfts.borrow().len());
         if nft_count > 0 {
-            return Err("Cannot update max supply after minting has started".to_string());
+            return Err("Cannot modify max supply after minting has started".to_string());
         }
     }
     
-    // Update collection details
+    // Update the collection details
     COLLECTION_DETAILS.with(|details| {
         let mut details_ref = details.borrow_mut();
         
@@ -1202,9 +1481,242 @@ fn update_collection_details(args: UpdateCollectionDetailsArgs) -> Result<(), St
         if let Some(base_url) = args.base_url {
             details_ref.base_url = base_url;
         }
+        
+        if let Some(pricing_enabled) = args.pricing_enabled {
+            details_ref.pricing_enabled = pricing_enabled;
+        }
+        
+        if let Some(mint_schedules) = args.mint_schedules {
+            details_ref.mint_schedules = mint_schedules;
+        }
     });
     
     Ok(())
+}
+
+// Arguments for updating a specific mint schedule
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct UpdateMintScheduleArgs {
+    pub name: String,                 // Name of the schedule to update (must be unique)
+    pub bundle_prices: Vec<BundlePrice>,        // Bundle prices directly associated with this schedule
+    pub start_time: Option<u64>,      // Start time in nanoseconds since epoch
+    pub end_time: Option<u64>,        // End time in nanoseconds since epoch
+    pub active: Option<bool>,         // Whether this schedule is active
+    pub whitelist_only: Option<bool>, // Whether this schedule is only for whitelisted users
+}
+
+// Update a mint schedule or add a new one
+#[update]
+fn update_mint_schedule(args: UpdateMintScheduleArgs) -> Result<(), String> {
+    let caller = caller();
+    
+    if !is_admin(caller) {
+        return Err("Unauthorized: Only admins can update mint schedules".to_string());
+    }
+    
+    if args.name.is_empty() {
+        return Err("Schedule name cannot be empty".to_string());
+    }
+    
+    // Validate time range if both are provided
+    if let (Some(start), Some(end)) = (args.start_time, args.end_time) {
+        if end <= start {
+            return Err("End time must be after start time".to_string());
+        }
+    }
+    
+    COLLECTION_DETAILS.with(|details| {
+        let mut details_ref = details.borrow_mut();
+        
+        // Try to find an existing schedule with this name
+        let existing_schedule = details_ref.mint_schedules.iter_mut().find(|s| s.name == args.name);
+        
+        if let Some(schedule) = existing_schedule {
+            // Update existing schedule
+            schedule.bundle_prices = args.bundle_prices;
+            
+            if let Some(start) = args.start_time {
+                schedule.start_time = Some(start);
+            }
+            
+            if let Some(end) = args.end_time {
+                schedule.end_time = Some(end);
+            }
+            
+            if let Some(active) = args.active {
+                schedule.active = active;
+            }
+            
+            if let Some(whitelist_only) = args.whitelist_only {
+                schedule.whitelist_only = whitelist_only;
+            }
+        } else {
+            // Add new schedule
+            details_ref.mint_schedules.push(MintSchedule {
+                name: args.name,
+                bundle_prices: args.bundle_prices,
+                start_time: args.start_time,
+                end_time: args.end_time,
+                active: args.active.unwrap_or(false),
+                whitelist_only: args.whitelist_only.unwrap_or(false),
+            });
+        }
+    });
+    
+    Ok(())
+}
+
+// Remove a mint schedule
+#[update]
+fn remove_mint_schedule(name: String) -> Result<(), String> {
+    let caller = caller();
+    
+    if !is_admin(caller) {
+        return Err("Unauthorized: Only admins can remove mint schedules".to_string());
+    }
+    
+    if name.is_empty() {
+        return Err("Schedule name cannot be empty".to_string());
+    }
+    
+    COLLECTION_DETAILS.with(|details| {
+        let mut details_ref = details.borrow_mut();
+        let initial_len = details_ref.mint_schedules.len();
+        
+        details_ref.mint_schedules.retain(|s| s.name != name);
+        
+        if details_ref.mint_schedules.len() == initial_len {
+            return Err(format!("No schedule with name '{}' found", name));
+        }
+        
+        Ok(())
+    });
+    
+    Ok(())
+}
+
+// Helper function to generate a UUID-like string
+fn generate_uuid() -> String {
+    let timestamp = ic_cdk::api::time();
+    let random = ic_cdk::api::call::arg_data_raw();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&(timestamp, random), &mut hasher);
+    let uuid = std::hash::Hasher::finish(&hasher);
+    format!("{:016x}", uuid)
+}
+
+// Generate a new NFT
+fn mint_nft(owner: Principal, asset_id: String) -> Result<u64, String> {
+    // Generate a new token ID
+    let token_id = NFT_COUNTER.with(|counter| {
+        let mut counter = counter.borrow_mut();
+        counter.increment()
+    });
+    
+    // Create a new token record
+    TOKENS.with(|tokens| {
+        let mut tokens = tokens.borrow_mut();
+        tokens.insert(token_id, owner);
+    });
+    
+    // Add token to owner's collection
+    OWNER_TOKENS.with(|owner_tokens| {
+        let mut owner_tokens = owner_tokens.borrow_mut();
+        let tokens = owner_tokens.entry(owner).or_insert_with(Vec::new);
+        tokens.push(token_id);
+    });
+    
+    // Add asset ID mapping if provided
+    if !asset_id.is_empty() {
+        TOKEN_ASSETS.with(|assets| {
+            let mut assets = assets.borrow_mut();
+            assets.insert(token_id, asset_id);
+        });
+    }
+    
+    Ok(token_id)
+}
+
+// Get the active mint price for a given quantity from the active schedules
+fn get_active_mint_price(quantity: u64, active_schedules: &[&MintSchedule]) -> Result<Option<Nat>, String> {
+    if active_schedules.is_empty() {
+        return Err("No active minting schedules available".to_string());
+    }
+    
+    // Choose the best price (lowest) from all active schedules
+    let mut best_price: Option<Nat> = None;
+    
+    for schedule in active_schedules {
+        // Find the closest bundle size that is <= requested quantity
+        let closest_bundle = schedule.bundle_prices.iter()
+            .filter(|b| b.quantity <= quantity)
+            .max_by_key(|b| b.quantity);
+        
+        if let Some(bundle) = closest_bundle {
+            let bundle_count = (quantity + bundle.quantity - 1) / bundle.quantity; // Ceiling division
+            let total_price = bundle.price.clone() * Nat::from(bundle_count);
+            
+            // Update best price if this is better
+            if let Some(ref current_best) = best_price {
+                if total_price < *current_best {
+                    best_price = Some(total_price);
+                }
+            } else {
+                best_price = Some(total_price);
+            }
+        }
+    }
+    
+    Ok(best_price)
+}
+
+// Get active mint price based on user status and available schedules
+fn get_user_mint_price(user: Principal, quantity: u64) -> Result<Nat, String> {
+    let current_time = ic_cdk::api::time();
+    
+    COLLECTION_DETAILS.with(|details| {
+        let details = details.borrow();
+        
+        if !details.pricing_enabled {
+            return Err("Minting is not enabled".to_string());
+        }
+        
+        // Check if user is in whitelist
+        let user_in_whitelist = WHITELIST.with(|whitelist| {
+            whitelist.borrow().get(&user).copied().unwrap_or(false)
+        });
+        
+        // Find active schedules that match the user's status
+        let active_schedules: Vec<&MintSchedule> = details.mint_schedules.iter()
+            .filter(|s| s.active)
+            .filter(|s| {
+                // Check if time constraints are met
+                let time_valid = match (s.start_time, s.end_time) {
+                    (Some(start), Some(end)) => current_time >= start && current_time <= end,
+                    (Some(start), None) => current_time >= start,
+                    (None, Some(end)) => current_time <= end,
+                    (None, None) => true,
+                };
+                
+                // Check if user status matches the schedule
+                let status_matches = if s.whitelist_only {
+                    user_in_whitelist
+                } else {
+                    true // Non-whitelist schedules apply to everyone
+                };
+                
+                time_valid && status_matches
+            })
+            .collect();
+        
+        if active_schedules.is_empty() {
+            return Err("No active minting schedules available for this user".to_string());
+        }
+        
+        // Get the price for this quantity from active schedules
+        get_active_mint_price(quantity, &active_schedules)?
+            .ok_or_else(|| format!("No price available for quantity {}", quantity))
+    })
 }
 
 // ==== ASSET MANAGEMENT FUNCTIONS ====
@@ -1315,14 +1827,14 @@ fn pre_upgrade() {
 
 #[post_upgrade]
 fn post_upgrade() {
-    // Try to restore full state (new format)
+    // Try to restore full state (newest format with timeframes and pricing)
     let full_restore_result = ic_cdk::storage::stable_restore::<(
         u64, // TOKEN_ID_COUNTER
         HashMap<u64, NFT>, // NFTS
         HashMap<Principal, Vec<u64>>, // OWNER_TOKENS
         HashMap<Principal, bool>, // WHITELIST
         HashMap<Principal, AdminType>, // ADMINS
-        CollectionDetails, // COLLECTION_DETAILS
+        CollectionDetails, // COLLECTION_DETAILS with new fields
         HashMap<String, Asset>, // ASSETS
         HashMap<String, bool>, // MINTED_ASSETS
         HashMap<u64, HashMap<Principal, ApprovalInfo>>, // TOKEN_APPROVALS

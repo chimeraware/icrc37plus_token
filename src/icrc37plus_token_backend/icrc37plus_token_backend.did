@@ -193,13 +193,33 @@ type ApprovalInfo = record {
   created_at : nat64;
 };
 
+type MintSchedule = record {
+  name : text;
+  bundle_prices : vec BundlePrice;
+  start_time : opt nat64;
+  end_time : opt nat64;
+  active : bool;
+  whitelist_only : bool;
+};
+
 type UpdateCollectionDetailsArgs = record {
   name : opt text;
   symbol : opt text;
   description : opt text;
   max_supply : opt nat64;
   base_url : opt text;
+  logo : opt text;
+  pricing_enabled : opt bool;
+  mint_schedules : opt vec MintSchedule;
 };
+
+type BundlePrice = record {
+  quantity : nat64;
+  price : nat;
+};
+
+// New type for specifying standard or whitelist prices
+type PriceType = variant { Standard; Whitelist; };
 
 type Value = variant {
   Nat : nat;
@@ -286,8 +306,15 @@ service : {
   
   // Minting functions
   mint : () -> (variant { Ok : record { nat64; NFTMetadata }; Err : text });
+  mint_bundle : (nat64) -> (variant { Ok : vec record { nat64; NFTMetadata }; Err : text });
   
   // Testing functions
   whoami : () -> (principal) query;
   make_me_admin : () -> (variant { Ok; Err : text });
+  
+  // Pricing and timeframe functions
+  update_prices : (PriceType, vec BundlePrice) -> (variant { Ok; Err : text });
+  get_mint_schedules : () -> (vec MintSchedule) query;
+  get_minting_timeframes : () -> (opt nat64, opt nat64, opt nat64, opt nat64) query;
+  is_minting_active : () -> (bool, bool, nat64) query;
 };

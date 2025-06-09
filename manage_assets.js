@@ -22,7 +22,7 @@ const options = {
   svgOnly: args.includes('--svg-only'),
   updatePaths: args.includes('--update-paths'),
   directory: args.find(arg => arg.startsWith('--dir='))?.split('=')[1] || 'svg',
-  canisterId: args.find(arg => arg.startsWith('--canister='))?.split('=')[1] || 'br5f7-7uaaa-aaaaa-qaaca-cai',
+  canisterId: args.find(arg => arg.startsWith('--canister='))?.split('=')[1] || 'bkyz2-fmaaa-aaaaa-qaaaq-cai',
   projectName: args.find(arg => arg.startsWith('--project='))?.split('=')[1] || 'JBDucks NFT'
 };
 
